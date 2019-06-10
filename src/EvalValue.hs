@@ -71,7 +71,6 @@ isSameType v1 v2 = do
       VChar _ -> return True 
       _ -> lift Nothing
     
-
 isSameValueType :: Value -> Value -> ContextState Bool
 isSameValueType v1 v2 = do
   case v1 of
@@ -111,7 +110,7 @@ getOrd e1 e2 operation = do
     3 -> case ev1 of 
       VInt v1 -> let VInt v2 = ev2 in if v1 >= v2 then return True else return False
       VChar v1 -> let VChar v2 = ev2 in if v1 >= v2 then return True else return False
-    
+
 addValue :: Value -> ContextState Value -> ContextState Value
 addValue v c = do
   ctx <- get
@@ -159,17 +158,17 @@ eval (EIf e1 e2 e3) = do
 eval (ELambda (pn, pt) e) = do
   ctx <- get
   case (value ctx) of
+    Nothing -> return $ VExpr (ELambda (pn, pt) e) []
     Just v -> do
       put (Context {value = Nothing, valueMap = (valueMap ctx)})
       tmpctx <- get
-      put (Context {value = (value ctx), valueMap = Map.insert pn v (valueMap ctx)})
+      put (Context {value = (value tmpctx), valueMap = Map.insert pn v (valueMap tmpctx)})
       result <- eval e
       put tmpctx
-      put ctx
       case result of
         VExpr expr vars -> return (VExpr expr ((pn, v):vars))
         _ -> return result
-    _ -> return $ VExpr (ELambda (pn, pt) e) []
+
 
 eval (ELet (n, e1) e2) = do
   ev1 <- eval e1
@@ -185,7 +184,7 @@ eval (ELetRec f (x, tx) (e1, ty) e2) = do
   put (Context {value = (value ctx), valueMap = Map.insert f function (valueMap ctx)})
   result <- eval e2
   put ctx
-  return result
+  trace (show result) $ return result
   
 eval (EVar n) = do
   ctx <- get
