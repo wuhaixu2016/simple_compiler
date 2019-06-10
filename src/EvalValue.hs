@@ -3,16 +3,19 @@ module EvalValue where
 
 import AST
 import Control.Monad.State
+import qualified Data.Map as Map
+import Debug.Trace
 
 data Value
   = VBool Bool
   | VInt Int
   | VChar Char
-  -- ... more
+  | VExpr Expr [(String, Value)]
   deriving (Show, Eq)
 
 data Context = Context { -- 可以用某种方式定义上下文，用于记录变量绑定状态
-                          } deriving (Show, Eq)
+                      value :: Maybe Value,
+                      valueMap :: Map.Map String Value } deriving (Show, Eq)
 
 type ContextState a = StateT Context Maybe a
 
@@ -109,6 +112,22 @@ getOrd e1 e2 operation = do
       VInt v1 -> let VInt v2 = ev2 in if v1 >= v2 then return True else return False
       VChar v1 -> let VChar v2 = ev2 in if v1 >= v2 then return True else return False
     
+addValue :: Value -> ContextState Value -> ContextState Value
+addValue v c = do
+  ctx <- get
+  put (Context {value = Just v, valueMap = (valueMap ctx)})
+  result <- c
+  put ctx
+  return result
+
+addVars :: [(String,Value)] -> ContextState Value -> ContextState Value
+addVars ((n, v):xs) c = do
+  ctx <- get
+  put (Context {value = (value ctx), valueMap = Map.insert n v (valueMap ctx)})
+  result <- addVars xs c
+  put ctx
+  return result
+addVars [] c = c
 
 eval :: Expr -> ContextState Value
 eval (EBoolLit b) = return $ VBool b
@@ -137,13 +156,56 @@ eval (EIf e1 e2 e3) = do
     VBool v1 -> if v1 then eval e2 else eval e3
     _ -> lift Nothing
 
+eval (ELambda (pn, pt) e) = do
+  ctx <- get
+  case (value ctx) of
+    Just v -> do
+      put (Context {value = Nothing, valueMap = (valueMap ctx)})
+      tmpctx <- get
+      put (Context {value = (value ctx), valueMap = Map.insert pn v (valueMap ctx)})
+      result <- eval e
+      put tmpctx
+      put ctx
+      case result of
+        VExpr expr vars -> return (VExpr expr ((pn, v):vars))
+        _ -> return result
+    _ -> return $ VExpr (ELambda (pn, pt) e) []
 
-    
+eval (ELet (n, e1) e2) = do
+  ev1 <- eval e1
+  ctx <- get
+  put (Context {value = (value ctx), valueMap = Map.insert n ev1 (valueMap ctx)})
+  result <- eval e2
+  put ctx
+  return result
+
+eval (ELetRec f (x, tx) (e1, ty) e2) = do 
+  function <- eval (ELambda (x, tx) e1)
+  ctx <- get
+  put (Context {value = (value ctx), valueMap = Map.insert f function (valueMap ctx)})
+  result <- eval e2
+  put ctx
+  return result
+  
+eval (EVar n) = do
+  ctx <- get
+  case ((valueMap ctx) Map.!? n) of 
+    Just t -> return t
+    _ -> lift Nothing
+
+eval (EApply e1 e2) = do
+  VExpr ex1 vars <- eval e1
+  ev2 <- eval e2
+  result <- addVars vars (addValue ev2 (eval ex1))
+  case result of
+    VExpr expr var -> return (VExpr expr (vars ++ var))
+    _ -> return result
+
 eval _ = undefined
 
 evalProgram :: Program -> Maybe Value
 evalProgram (Program adts body) = evalStateT (eval body) $
-  Context {  } -- 可以用某种方式定义上下文，用于记录变量绑定状态
+  Context {value=Nothing, valueMap=Map.fromList []} -- 可以用某种方式定义上下文，用于记录变量绑定状态
 
 evalValue :: Program -> Result
 evalValue p = case evalProgram p of
