@@ -23,16 +23,127 @@ getBool e = do
     VBool b -> return b
     _ -> lift Nothing
 
+evalAnd :: Expr -> Expr -> ContextState Bool
+evalAnd e1 e2 = do
+  ev1 <- getBool e1
+  case ev1 of
+    False -> return False
+    True -> getBool e2
+
+evalOr :: Expr -> Expr -> ContextState Bool
+evalOr e1 e2 = do
+  ev1 <- getBool e1
+  case ev1 of
+    True -> return True
+    False -> getBool e2
+
+getInt :: Expr -> ContextState Int
+getInt e = do
+  ev <- eval e 
+  case ev of
+    VInt i -> return i 
+    _ -> lift Nothing
+
+getCal :: Expr -> Expr -> Integer -> ContextState Int
+getCal e1 e2 operation = do
+  VInt ev1 <- eval e1
+  VInt ev2 <- eval e2
+  case operation of
+    0 -> return (ev1 + ev2)
+    1 -> return (ev1 - ev2)
+    2 -> return (ev1 * ev2)
+    3 -> return (ev1 `div` ev2)
+    4 -> return (ev1 `mod` ev2)
+
+isSameType :: Value -> Value -> ContextState Bool
+isSameType v1 v2 = do
+  case v1 of
+    VInt _ -> case v2 of 
+      VInt _ -> return True 
+      _ -> lift Nothing
+    VBool _ -> case v2 of 
+      VBool _ -> return True 
+      _ -> lift Nothing
+    VChar _ -> case v2 of 
+      VChar _ -> return True 
+      _ -> lift Nothing
+    
+
+isSameValueType :: Value -> Value -> ContextState Bool
+isSameValueType v1 v2 = do
+  case v1 of
+    VInt _ -> case v2 of 
+      VInt _ -> return True 
+      _ -> lift Nothing
+    VChar _ -> case v2 of 
+      VChar _ -> return True 
+      _ -> lift Nothing
+
+getEq :: Expr -> Expr -> ContextState Bool
+getEq e1 e2 = do
+  ev1 <- eval e1
+  ev2 <- eval e2
+  isSameType ev1 ev2 >> if ev1 == ev2 then return True else return False
+
+getNeq :: Expr -> Expr -> ContextState Bool
+getNeq e1 e2 = do
+  ev1 <- eval e1
+  ev2 <- eval e2
+  isSameType ev1 ev2 >> if ev1 == ev2 then return False else return True
+
+getOrd :: Expr -> Expr -> Integer -> ContextState Bool
+getOrd e1 e2 operation = do
+  ev1 <- eval e1
+  ev2 <- eval e2
+  isSameValueType ev1 ev2 >> case operation of
+    0 -> case ev1 of 
+      VInt v1 -> let VInt v2 = ev2 in if v1 < v2 then return True else return False
+      VChar v1 -> let VChar v2 = ev2 in if v1 < v2 then return True else return False
+    1 -> case ev1 of 
+      VInt v1 -> let VInt v2 = ev2 in if v1 > v2 then return True else return False
+      VChar v1 -> let VChar v2 = ev2 in if v1 > v2 then return True else return False
+    2 -> case ev1 of 
+      VInt v1 -> let VInt v2 = ev2 in if v1 <= v2 then return True else return False
+      VChar v1 -> let VChar v2 = ev2 in if v1 <= v2 then return True else return False
+    3 -> case ev1 of 
+      VInt v1 -> let VInt v2 = ev2 in if v1 >= v2 then return True else return False
+      VChar v1 -> let VChar v2 = ev2 in if v1 >= v2 then return True else return False
+    
+
 eval :: Expr -> ContextState Value
 eval (EBoolLit b) = return $ VBool b
+eval (EIntLit i) = return $ VInt i 
+eval (ECharLit c) = return $ VChar c
 eval (ENot e) = getBool e >>= \b -> return (VBool $ not b)
--- ... more
+eval (EAnd e1 e2) = (evalAnd e1 e2) >>= \b -> return (VBool b)
+eval (EOr e1 e2) = (evalOr e1 e2) >>= \b -> return (VBool b)
+eval (EAdd e1 e2) = (getCal e1 e2 0) >>= \b -> return (VInt b)
+eval (ESub e1 e2) = (getCal e1 e2 1) >>= \b -> return (VInt b)
+eval (EMul e1 e2) = (getCal e1 e2 2) >>= \b -> return (VInt b)
+eval (EDiv e1 e2) = (getCal e1 e2 3) >>= \b -> return (VInt b)
+eval (EMod e1 e2) = (getCal e1 e2 4) >>= \b -> return (VInt b)
+
+eval (EEq e1 e2) = (getEq e1 e2) >>= \b -> return (VBool b)
+eval (ENeq e1 e2) = (getNeq e1 e2) >>= \b -> return (VBool b)
+
+eval (ELt e1 e2) = (getOrd e1 e2 0) >>= \b -> return (VBool b)
+eval (EGt e1 e2) = (getOrd e1 e2 1) >>= \b -> return (VBool b)
+eval (ELe e1 e2) = (getOrd e1 e2 2) >>= \b -> return (VBool b)
+eval (EGe e1 e2) = (getOrd e1 e2 3) >>= \b -> return (VBool b)
+
+eval (EIf e1 e2 e3) = do
+  ev1 <- eval e1
+  case ev1 of
+    VBool v1 -> if v1 then eval e2 else eval e3
+    _ -> lift Nothing
+
+
+    
 eval _ = undefined
 
 evalProgram :: Program -> Maybe Value
 evalProgram (Program adts body) = evalStateT (eval body) $
   Context {  } -- 可以用某种方式定义上下文，用于记录变量绑定状态
-
 
 evalValue :: Program -> Result
 evalValue p = case evalProgram p of
