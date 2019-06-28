@@ -6,7 +6,9 @@ import Control.Monad.State
 import qualified Data.Map as Map
 
 data Context = Context { -- 可以用某种方式定义上下文，用于记录变量绑定状态
-  getVars :: Map.Map String Type
+  getVars :: Map.Map String Type,
+  getAdt :: Map.Map String Type,
+  getAdtVar :: Map.Map String [Type]
                        }
   deriving (Show, Eq)
 
@@ -43,6 +45,9 @@ isValue e1 e2 = do
     TInt -> isInt e2 >> return TInt
     _ -> lift Nothing
 
+isSame :: Type -> Type -> ContextState Type
+isSame t1 t2 = do
+  if t1 == t2 then return t1 else lift Nothing
 
 isSameType :: Expr -> Expr -> ContextState Type
 isSameType e1 e2 = do
@@ -53,6 +58,73 @@ isSameType e1 e2 = do
     TBool -> isBool e2 >> return TBool
     _ -> lift Nothing
 
+dataType :: [Type] -> Type
+dataType (p:[]) = p
+dataType (p:ps) = TArrow p (dataType ps)
+
+evalPattern' :: [Type] -> [Pattern] -> ContextState Bool
+evalPattern' [] [] = return True
+evalPattern' _ [] = lift Nothing
+evalPattern' [] _ = lift Nothing
+evalPattern' (x:xs) (y:ys) = evalPattern x y >> evalPattern' xs ys
+
+evalPattern :: Type -> Pattern -> ContextState Type
+evalPattern t p = do
+  case p of
+    PBoolLit _ -> return TBool
+    PIntLit _ -> return TInt
+    PCharLit _ -> return TChar
+    PVar s -> do
+      ctx <- get
+      put (Context (Map.insert s t (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
+      return t
+    PData s vs -> do
+      ctx <- get
+      case ((getAdtVar ctx) Map.!? s) of
+        Nothing -> lift Nothing
+        Just ts -> evalPattern' ts vs >> case ((getAdt ctx) Map.!? s) of
+                                            Nothing -> lift Nothing
+                                            Just t -> return t
+
+check :: Type -> Pattern -> Expr -> ContextState Type
+check lt p e = do
+  ctx <- get
+  pt <- evalPattern lt p
+  t <- isSame pt lt
+  result <- eval e
+  put ctx
+  return result
+
+checkList :: Type -> [(Pattern, Expr)] -> Type -> ContextState Type
+checkList lt [] t = return t
+checkList lt (e:es) t = do
+  t' <- check lt (fst e) (snd e)
+  t  <- isSame t t'
+  checkList lt es t
+
+checkCase :: Type -> [(Pattern, Expr)] -> ContextState Type
+checkCase _ [] = do 
+  lift Nothing
+checkCase lt (e:es) = do
+  t <- check lt (fst e) (snd e)
+  checkList lt es t
+
+bindVar :: String -> Type -> ContextState Type -> ContextState Type
+bindVar v t ct = do
+  ctx <- get
+  put (Context (Map.insert v t (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
+  result <- ct
+  put ctx
+  return result
+
+checkFunc :: String -> String -> Type -> Expr -> Type -> ContextState Type
+checkFunc f x tx e1 ty = do
+  ctx <- get
+  put (Context (Map.insert f (TArrow tx ty) (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
+  ty' <- bindVar x tx (eval e1)
+  put ctx
+  t <- isSame ty' ty
+  return (TArrow tx ty)
 
 eval :: Expr -> ContextState Type
 eval (EBoolLit _) = return TBool
@@ -72,28 +144,35 @@ eval (ELt  e1 e2) = isValue e1 e2 >> return TBool
 eval (EGt  e1 e2) = isValue e1 e2 >> return TBool
 eval (EGe  e1 e2) = isValue e1 e2 >> return TBool
 eval (ELe  e1 e2) = isValue e1 e2 >> return TBool
-eval (EIf  e1 e2 e3) = isBool e1 >> isSameType e2 e3 >> eval e2
+
+eval (EIf e1 e2 e3) = do
+  e1t <- isBool e1
+  e2t <- eval e2
+  e3t <- eval e3
+  et <- isSame e2t e3t
+  return et
+
 eval (ELambda (pn, pt) e) = do
   ctx <- get
-  put (Context $ Map.insert pn pt (getVars ctx))
+  put (Context (Map.insert pn pt (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
   res <- eval e
   put ctx
   return (TArrow pt res)
 eval (ELet (n, e1) e2) = do
   ctx <- get
   t <- eval e1
-  put (Context $ Map.insert n t (getVars ctx))
+  put (Context (Map.insert n t (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
   res <- eval e2
   put ctx
   return res 
 eval (ELetRec f (x, tx) (e1, ty) e2) = do 
   ctx <- get
-  put (Context $ (Map.insert x tx $ Map.insert f (TArrow tx ty) (getVars ctx)))
+  put (Context (Map.insert x tx $ Map.insert f (TArrow tx ty) (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
   tmp <- eval e1
   put ctx
   if tmp == ty then do
     ctx <- get
-    put (Context $ Map.insert f (TArrow tx ty) (getVars ctx))
+    put (Context (Map.insert f (TArrow tx ty) (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
     res <- eval e2
     put ctx
     return res
@@ -102,16 +181,37 @@ eval (EVar s) = do
   ctx <- get 
   case (getVars ctx) Map.!? s of
     Just x -> return x
-    _ -> lift Nothing
+    _ -> case (getAdt ctx) Map.!? s of
+      Nothing -> lift Nothing
+      Just y -> case (getAdtVar ctx) Map.!? s of
+        Nothing -> lift Nothing
+        Just z -> return $ dataType (z ++ [y])
 eval (EApply e1 e2) = do
   et1 <- eval e1
   et2 <- eval e2
   case et1 of
     TArrow x y -> if x == et2 then return y else lift Nothing
     _ -> lift Nothing
-eval _ = undefined
 
+eval (ECase e pe) = do
+  ctx <- get
+  et <- eval e
+  rt <- checkCase et pe
+  put ctx
+  return rt
+    
+initAdt :: [ADT] -> Map.Map String Type -> Map.Map String Type
+initAdt adts map = foldl ins map adts
+  where
+    ins map (ADT t s) = foldl (flip (flip Map.insert $ TData t)) map (fst (unzip s))
+
+initAdtVar :: [ADT] -> Map.Map String [Type] -> Map.Map String [Type]
+initAdtVar adts map = foldl ins map adts
+  where
+    ins map (ADT t s) = foldl ins' map s
+      where
+        ins' map (s, t) = Map.insert s t map
 
 evalType :: Program -> Maybe Type
 evalType (Program adts body) = evalStateT (eval body) $
-  Context (Map.fromList []) -- 可以用某种方式定义上下文，用于记录变量绑定状态
+  Context {getVars = Map.fromList [], getAdt = initAdt adts (Map.fromList []), getAdtVar = initAdtVar adts (Map.fromList [])}

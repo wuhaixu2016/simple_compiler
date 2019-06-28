@@ -11,11 +11,13 @@ data Value
   | VInt Int
   | VChar Char
   | VExpr Expr [(String, Value)]
+  | VData String [Value]
   deriving (Show, Eq)
 
 data Context = Context { -- 可以用某种方式定义上下文，用于记录变量绑定状态
                       value :: Maybe Value,
-                      valueMap :: Map.Map String Value } deriving (Show, Eq)
+                      valueMap :: Map.Map String Value,
+                      funcMap:: Map.Map String Expr } deriving (Show, Eq)
 
 type ContextState a = StateT Context Maybe a
 
@@ -114,7 +116,7 @@ getOrd e1 e2 operation = do
 addValue :: Value -> ContextState Value -> ContextState Value
 addValue v c = do
   ctx <- get
-  put (Context {value = Just v, valueMap = (valueMap ctx)})
+  put (Context {value = Just v, valueMap = (valueMap ctx), funcMap = funcMap ctx})
   result <- c
   put ctx
   return result
@@ -122,11 +124,87 @@ addValue v c = do
 addVars :: [(String,Value)] -> ContextState Value -> ContextState Value
 addVars ((n, v):xs) c = do
   ctx <- get
-  put (Context {value = (value ctx), valueMap = Map.insert n v (valueMap ctx)})
+  put (Context {value = (value ctx), valueMap = Map.insert n v (valueMap ctx), funcMap = funcMap ctx})
   result <- addVars xs c
   put ctx
   return result
 addVars [] c = c
+
+matchPattern' :: [Value] -> [Pattern] -> ContextState Bool
+matchPattern' [] [] = return True
+matchPattern' _ [] = return False
+matchPattern' [] _ = return False
+matchPattern' (v:vs) (p:ps) = do
+  b <- matchPattern v p
+  if b == True
+  then matchPattern' vs ps
+  else return False
+
+matchPattern :: Value -> Pattern -> ContextState Bool
+matchPattern v p = do
+  ctx <- get
+  case v of
+    VInt vv -> case p of
+                PIntLit pv -> do
+                  if vv == pv
+                  then return True
+                  else return False
+                PVar s -> do
+                  put (Context (value ctx) (Map.insert s v (valueMap ctx)) (funcMap ctx))
+                  return True
+                _ -> do
+                  return False
+    VChar vv -> case p of
+                  PCharLit pv -> do
+                    if vv == pv
+                    then return True
+                    else return False
+                  PVar s -> do
+                    put (Context (value ctx) (Map.insert s v (valueMap ctx)) (funcMap ctx))
+                    return True
+                  _ -> do
+                    return False
+    VBool vv -> case p of
+                  PBoolLit pv -> do
+                    if vv == pv
+                    then return True
+                    else return False
+                  PVar s -> do
+                    put (Context (value ctx) (Map.insert s v (valueMap ctx)) (funcMap ctx))
+                    return True
+                  _ -> do
+                    return False
+    VData s vs -> case p of
+                    PData ps pats -> do
+                      if s == ps
+                      then matchPattern' vs pats
+                      else return False
+                    PVar ss -> do
+                      put (Context (value ctx) (Map.insert ss v (valueMap ctx)) (funcMap ctx))
+                      return True
+                    _ -> do
+                      return False
+
+evalPattern :: Value -> [(Pattern, Expr)] -> ContextState Value
+evalPattern _ [] = lift Nothing
+evalPattern v (p:ps) = do
+  ctx <- get
+  b <- matchPattern v (fst p)
+  case b of
+    True -> do
+      result <- eval (snd p)
+      put ctx
+      return result
+    False -> do
+      put ctx
+      evalPattern v ps
+ 
+evalEs :: [Expr] -> ContextState [Value]
+evalEs [] = return []
+evalEs (e:es) = do
+  ev <- eval e
+  esv <- evalEs es
+  return (ev:esv)
 
 eval :: Expr -> ContextState Value
 eval (EBoolLit b) = return $ VBool b
@@ -160,9 +238,9 @@ eval (ELambda (pn, pt) e) = do
   case (value ctx) of
     Nothing -> return $ VExpr (ELambda (pn, pt) e) []
     Just v -> do
-      put (Context {value = Nothing, valueMap = (valueMap ctx)})
+      put (Context {value = Nothing, valueMap = (valueMap ctx), funcMap = funcMap ctx})
       tmpctx <- get
-      put (Context {value = (value tmpctx), valueMap = Map.insert pn v (valueMap tmpctx)})
+      put (Context {value = (value tmpctx), valueMap = Map.insert pn v (valueMap tmpctx), funcMap = funcMap tmpctx})
       result <- eval e
       put tmpctx
       case result of
@@ -173,7 +251,7 @@ eval (ELambda (pn, pt) e) = do
 eval (ELet (n, e1) e2) = do
   ev1 <- eval e1
   ctx <- get
-  put (Context {value = (value ctx), valueMap = Map.insert n ev1 (valueMap ctx)})
+  put (Context {value = (value ctx), valueMap = Map.insert n ev1 (valueMap ctx), funcMap = funcMap ctx})
   result <- eval e2
   put ctx
   return result
@@ -181,7 +259,7 @@ eval (ELet (n, e1) e2) = do
 eval (ELetRec f (x, tx) (e1, ty) e2) = do 
   function <- eval (ELambda (x, tx) e1)
   ctx <- get
-  put (Context {value = (value ctx), valueMap = Map.insert f function (valueMap ctx)})
+  put (Context {value = (value ctx), valueMap = Map.insert f function (valueMap ctx), funcMap = funcMap ctx})
   result <- eval e2
   put ctx
   trace (show result) $ return result
@@ -190,7 +268,9 @@ eval (EVar n) = do
   ctx <- get
   case ((valueMap ctx) Map.!? n) of 
     Just t -> return t
-    _ -> lift Nothing
+    _ -> case (funcMap ctx) Map.!? n of
+      Just t -> eval t
+      _ -> lift Nothing 
 
 eval (EApply e1 e2) = do
   VExpr ex1 vars <- eval e1
@@ -200,11 +280,29 @@ eval (EApply e1 e2) = do
     VExpr expr var -> return (VExpr expr (vars ++ var))
     _ -> return result
 
-eval _ = undefined
+eval (ECase e pe) = do
+  ev <- eval e
+  result <- evalPattern ev pe
+  return result
+
+eval (EData con es) = do
+  vs <- evalEs es
+  return $ VData con vs
+
+initFunc :: [ADT] -> Map.Map String Expr -> Map.Map String Expr
+initFunc adts map = foldl ins map adts
+  where
+    ins map (ADT t s) = foldl inslam map s
+      where
+        inslam map (s, ts) = Map.insert s (lsm ts 1 (lamexp s (length ts))) map
+          where
+            lsm [] _ exp = exp
+            lsm (t:ts) k exp = lsm ts (k+1) (ELambda (show k, t) exp)
+            lamexp s n = EData s [EVar (show (n + 1 - x)) | x <- [1..n]]
 
 evalProgram :: Program -> Maybe Value
 evalProgram (Program adts body) = evalStateT (eval body) $
-  Context {value=Nothing, valueMap=Map.fromList []} -- 可以用某种方式定义上下文，用于记录变量绑定状态
+  Context {value=Nothing, valueMap=Map.fromList [], funcMap = initFunc adts (Map.fromList[])} -- 可以用某种方式定义上下文，用于记录变量绑定状态
 
 evalValue :: Program -> Result
 evalValue p = case evalProgram p of
