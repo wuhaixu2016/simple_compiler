@@ -4,7 +4,7 @@ module EvalValue where
 import AST
 import Control.Monad.State
 import qualified Data.Map as Map
-import Debug.Trace
+-- import Debug.Trace
 
 data Value
   = VBool Bool
@@ -130,15 +130,13 @@ addVars ((n, v):xs) c = do
   return result
 addVars [] c = c
 
-matchPattern' :: [Value] -> [Pattern] -> ContextState Bool
-matchPattern' [] [] = return True
-matchPattern' _ [] = return False
-matchPattern' [] _ = return False
-matchPattern' (v:vs) (p:ps) = do
-  b <- matchPattern v p
-  if b == True
-  then matchPattern' vs ps
-  else return False
+match :: [Value] -> [Pattern] -> ContextState Bool
+match [] [] = return True
+match _ [] = return False
+match [] _ = return False
+match (x:xs) (y:ys) = do
+  tmp <- matchPattern x y
+  if tmp == True then match xs ys else return False
 
 matchPattern :: Value -> Pattern -> ContextState Bool
 matchPattern v p = do
@@ -146,9 +144,7 @@ matchPattern v p = do
   case v of
     VInt vv -> case p of
                 PIntLit pv -> do
-                  if vv == pv
-                  then return True
-                  else return False
+                  if vv == pv then return True else return False 
                 PVar s -> do
                   put (Context (value ctx) (Map.insert s v (valueMap ctx)) (funcMap ctx))
                   return True
@@ -156,9 +152,7 @@ matchPattern v p = do
                   return False
     VChar vv -> case p of
                   PCharLit pv -> do
-                    if vv == pv
-                    then return True
-                    else return False
+                    if vv == pv then return True else return False
                   PVar s -> do
                     put (Context (value ctx) (Map.insert s v (valueMap ctx)) (funcMap ctx))
                     return True
@@ -166,9 +160,7 @@ matchPattern v p = do
                     return False
     VBool vv -> case p of
                   PBoolLit pv -> do
-                    if vv == pv
-                    then return True
-                    else return False
+                    if vv == pv then return True else return False
                   PVar s -> do
                     put (Context (value ctx) (Map.insert s v (valueMap ctx)) (funcMap ctx))
                     return True
@@ -176,21 +168,20 @@ matchPattern v p = do
                     return False
     VData s vs -> case p of
                     PData ps pats -> do
-                      if s == ps
-                      then matchPattern' vs pats
-                      else return False
+                      if s == ps then match vs pats else return False
                     PVar ss -> do
                       put (Context (value ctx) (Map.insert ss v (valueMap ctx)) (funcMap ctx))
                       return True
                     _ -> do
                       return False
+    _ -> lift Nothing
 
 evalPattern :: Value -> [(Pattern, Expr)] -> ContextState Value
 evalPattern _ [] = lift Nothing
 evalPattern v (p:ps) = do
   ctx <- get
-  b <- matchPattern v (fst p)
-  case b of
+  tmp <- matchPattern v (fst p)
+  case tmp of
     True -> do
       result <- eval (snd p)
       put ctx
@@ -199,11 +190,11 @@ evalPattern v (p:ps) = do
       put ctx
       evalPattern v ps
  
-evalEs :: [Expr] -> ContextState [Value]
-evalEs [] = return []
-evalEs (e:es) = do
+evalExprs :: [Expr] -> ContextState [Value]
+evalExprs [] = return []
+evalExprs (e:es) = do
   ev <- eval e
-  esv <- evalEs es
+  esv <- evalExprs es
   return (ev:esv)
 
 eval :: Expr -> ContextState Value
@@ -262,7 +253,7 @@ eval (ELetRec f (x, tx) (e1, ty) e2) = do
   put (Context {value = (value ctx), valueMap = Map.insert f function (valueMap ctx), funcMap = funcMap ctx})
   result <- eval e2
   put ctx
-  trace (show result) $ return result
+  return result
   
 eval (EVar n) = do
   ctx <- get
@@ -286,7 +277,7 @@ eval (ECase e pe) = do
   return result
 
 eval (EData con es) = do
-  vs <- evalEs es
+  vs <- evalExprs es
   return $ VData con vs
 
 initFunc :: [ADT] -> Map.Map String Expr -> Map.Map String Expr

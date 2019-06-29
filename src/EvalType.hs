@@ -58,9 +58,9 @@ isSameType e1 e2 = do
     TBool -> isBool e2 >> return TBool
     _ -> lift Nothing
 
-dataType :: [Type] -> Type
-dataType (p:[]) = p
-dataType (p:ps) = TArrow p (dataType ps)
+makefunc :: [Type] -> Type
+makefunc (p:[]) = p
+makefunc (p:ps) = TArrow p (makefunc ps)
 
 evalPattern' :: [Type] -> [Pattern] -> ContextState Bool
 evalPattern' [] [] = return True
@@ -80,9 +80,9 @@ evalPattern t p = do
       return t
     PData s vs -> do
       ctx <- get
-      case ((getAdtVar ctx) Map.!? s) of
+      case (getAdtVar ctx) Map.!? s of
         Nothing -> lift Nothing
-        Just ts -> evalPattern' ts vs >> case ((getAdt ctx) Map.!? s) of
+        Just ts -> evalPattern' ts vs >> case (getAdt ctx) Map.!? s of
                                             Nothing -> lift Nothing
                                             Just t -> return t
 
@@ -109,23 +109,6 @@ checkCase lt (e:es) = do
   t <- check lt (fst e) (snd e)
   checkList lt es t
 
-bindVar :: String -> Type -> ContextState Type -> ContextState Type
-bindVar v t ct = do
-  ctx <- get
-  put (Context (Map.insert v t (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
-  result <- ct
-  put ctx
-  return result
-
-checkFunc :: String -> String -> Type -> Expr -> Type -> ContextState Type
-checkFunc f x tx e1 ty = do
-  ctx <- get
-  put (Context (Map.insert f (TArrow tx ty) (getVars ctx)) (getAdt ctx) (getAdtVar ctx))
-  ty' <- bindVar x tx (eval e1)
-  put ctx
-  t <- isSame ty' ty
-  return (TArrow tx ty)
-
 eval :: Expr -> ContextState Type
 eval (EBoolLit _) = return TBool
 eval (EIntLit _) = return TInt
@@ -146,11 +129,11 @@ eval (EGe  e1 e2) = isValue e1 e2 >> return TBool
 eval (ELe  e1 e2) = isValue e1 e2 >> return TBool
 
 eval (EIf e1 e2 e3) = do
-  e1t <- isBool e1
-  e2t <- eval e2
-  e3t <- eval e3
-  et <- isSame e2t e3t
-  return et
+  t1 <- isBool e1
+  t2 <- eval e2
+  t3 <- eval e3
+  res <- isSame t2 t3
+  return res
 
 eval (ELambda (pn, pt) e) = do
   ctx <- get
@@ -185,7 +168,7 @@ eval (EVar s) = do
       Nothing -> lift Nothing
       Just y -> case (getAdtVar ctx) Map.!? s of
         Nothing -> lift Nothing
-        Just z -> return $ dataType (z ++ [y])
+        Just z -> return $ makefunc (z ++ [y])
 eval (EApply e1 e2) = do
   et1 <- eval e1
   et2 <- eval e2
@@ -193,17 +176,18 @@ eval (EApply e1 e2) = do
     TArrow x y -> if x == et2 then return y else lift Nothing
     _ -> lift Nothing
 
-eval (ECase e pe) = do
+eval (ECase e1 e2) = do
   ctx <- get
-  et <- eval e
-  rt <- checkCase et pe
+  t <- eval e1
+  res <- checkCase t e2
   put ctx
-  return rt
+  return res
     
 initAdt :: [ADT] -> Map.Map String Type -> Map.Map String Type
 initAdt adts map = foldl ins map adts
   where
-    ins map (ADT t s) = foldl (flip (flip Map.insert $ TData t)) map (fst (unzip s))
+    ins map (ADT t s) = 
+      foldl (flip (flip Map.insert $ TData t)) map (fst (unzip s))
 
 initAdtVar :: [ADT] -> Map.Map String [Type] -> Map.Map String [Type]
 initAdtVar adts map = foldl ins map adts
