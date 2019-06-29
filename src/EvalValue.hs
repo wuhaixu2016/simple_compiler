@@ -130,6 +130,17 @@ addVars ((n, v):xs) c = do
   return result
 addVars [] c = c
 
+initFunc :: [ADT] -> Map.Map String Expr -> Map.Map String Expr
+initFunc adts map = foldl ins map adts
+  where
+    ins map (ADT t s) = foldl inslam map s
+      where
+        inslam map (s, ts) = Map.insert s (lsm ts 1 (lamexp s (length ts))) map
+          where
+            lsm [] _ exp = exp
+            lsm (t:ts) k exp = lsm ts (k+1) (ELambda (show k, t) exp)
+            lamexp s n = EData s [EVar (show (n + 1 - x)) | x <- [1..n]]
+
 match :: [Value] -> [Pattern] -> ContextState Bool
 match [] [] = return True
 match _ [] = return False
@@ -279,17 +290,6 @@ eval (ECase e pe) = do
 eval (EData con es) = do
   vs <- evalExprs es
   return $ VData con vs
-
-initFunc :: [ADT] -> Map.Map String Expr -> Map.Map String Expr
-initFunc adts map = foldl ins map adts
-  where
-    ins map (ADT t s) = foldl inslam map s
-      where
-        inslam map (s, ts) = Map.insert s (lsm ts 1 (lamexp s (length ts))) map
-          where
-            lsm [] _ exp = exp
-            lsm (t:ts) k exp = lsm ts (k+1) (ELambda (show k, t) exp)
-            lamexp s n = EData s [EVar (show (n + 1 - x)) | x <- [1..n]]
 
 evalProgram :: Program -> Maybe Value
 evalProgram (Program adts body) = evalStateT (eval body) $

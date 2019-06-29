@@ -62,11 +62,11 @@ makefunc :: [Type] -> Type
 makefunc (p:[]) = p
 makefunc (p:ps) = TArrow p (makefunc ps)
 
-evalPattern' :: [Type] -> [Pattern] -> ContextState Bool
-evalPattern' [] [] = return True
-evalPattern' _ [] = lift Nothing
-evalPattern' [] _ = lift Nothing
-evalPattern' (x:xs) (y:ys) = evalPattern x y >> evalPattern' xs ys
+match :: [Type] -> [Pattern] -> ContextState Bool
+match [] [] = return True
+match _ [] = lift Nothing
+match [] _ = lift Nothing
+match (x:xs) (y:ys) = evalPattern x y >> match xs ys
 
 evalPattern :: Type -> Pattern -> ContextState Type
 evalPattern t p = do
@@ -82,7 +82,7 @@ evalPattern t p = do
       ctx <- get
       case (getAdtVar ctx) Map.!? s of
         Nothing -> lift Nothing
-        Just ts -> evalPattern' ts vs >> case (getAdt ctx) Map.!? s of
+        Just ts -> match ts vs >> case (getAdt ctx) Map.!? s of
                                             Nothing -> lift Nothing
                                             Just t -> return t
 
@@ -98,8 +98,8 @@ check lt p e = do
 checkList :: Type -> [(Pattern, Expr)] -> Type -> ContextState Type
 checkList lt [] t = return t
 checkList lt (e:es) t = do
-  t' <- check lt (fst e) (snd e)
-  t  <- isSame t t'
+  tmp <- check lt (fst e) (snd e)
+  t  <- isSame t tmp
   checkList lt es t
 
 checkCase :: Type -> [(Pattern, Expr)] -> ContextState Type
@@ -108,6 +108,19 @@ checkCase _ [] = do
 checkCase lt (e:es) = do
   t <- check lt (fst e) (snd e)
   checkList lt es t
+
+initAdt :: [ADT] -> Map.Map String Type -> Map.Map String Type
+initAdt adts map = foldl ins map adts
+  where
+    ins map (ADT t s) = 
+      foldl (flip (flip Map.insert $ TData t)) map (fst (unzip s))
+
+initAdtVar :: [ADT] -> Map.Map String [Type] -> Map.Map String [Type]
+initAdtVar adts map = foldl ins map adts
+  where
+    ins map (ADT t s) = foldl ins' map s
+      where
+        ins' map (s, t) = Map.insert s t map
 
 eval :: Expr -> ContextState Type
 eval (EBoolLit _) = return TBool
@@ -182,19 +195,6 @@ eval (ECase e1 e2) = do
   res <- checkCase t e2
   put ctx
   return res
-    
-initAdt :: [ADT] -> Map.Map String Type -> Map.Map String Type
-initAdt adts map = foldl ins map adts
-  where
-    ins map (ADT t s) = 
-      foldl (flip (flip Map.insert $ TData t)) map (fst (unzip s))
-
-initAdtVar :: [ADT] -> Map.Map String [Type] -> Map.Map String [Type]
-initAdtVar adts map = foldl ins map adts
-  where
-    ins map (ADT t s) = foldl ins' map s
-      where
-        ins' map (s, t) = Map.insert s t map
 
 evalType :: Program -> Maybe Type
 evalType (Program adts body) = evalStateT (eval body) $
